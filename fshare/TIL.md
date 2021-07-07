@@ -168,3 +168,11 @@ if(shutdown(sock_fd, SHUT_WR) != 0){
 3. Today mission is making dropbox using inotify. However, there are still a lack of understanting about send() & recv() & block & non_block. So I study mainly this concepts after finish study group.
 
 + blocking 모드는 간단하게 소켓이 블락 되는 것이다. 따라서 블락된 상태에선 어떤 다른 일을 할 수 없게 된다. 하지만 fcntl()함수를 통해 non_blocking으로 설정하게 되면, 소켓 상태를 주기적으로 확인할 수 있는 기회가 생기게 된다. 결국 client와 server간에 좀 더 자유로운 소통이 가능해 진다고 이해했다. 
+----------------------------------------------
+
+
+# Wendsday, July 7, 2021
+1. 오늘은 쓰레기 값이 나왔던 'list'와 구하지 못 했던 'get'의 코드를 짰다. 처음에 non_blocking으로 이루어 지는 networking이 잘 이해되지 않아서 많은 시간을 투자했다. 내가 계속 하고 있었던 실수는 server에서 보내는 처음 헤더 4 바이트를 읽고, 다음 동작을 해야 하는데 recv()가 while문 안에 갇혀있어서 server에서 보내는 즉시 바로 읽어대고 있었다. 그래서 그 다음 단계의 recv에선 아무리 socket을 읽어도 아무것도 읽지 못한 것이다. 얼마전에 setsockopt()을 공부하면서 어느정도 이해하고 있다고 생각했지만, 아직 덜 이해한듯 보여 스터디 시간이 끝난 후 보충 공부를 좀 더 하였다.
+2. socket network는 때떄로 보내고 싶은 데이터를 다 못 보낼 때가 있다고 했다. 따라서 내가 보내고 싶은 데이터를 확실히 보내고, 받을 수 있는 더블체크가 꼭 필요하다. 더블체크는 while문으로 충분히 구현할 수 있다.
+3. 'list'기능이 잘 안 됐던 이유는 너무 복잡하게 생각해서 recv()를 할 때 잘못된 바이트 수 만큼 읽고 있었다. 그 결과 client는 file list를 읽은 뒤 뒤에 쓰레기 값 까지 출력했다.
+4. 'get' 기능을 구현하기 위해선, client가 server에서 가져오고 싶은 파일을 요청한다. 그렇게 되면 server는 파일이 존재하는지 체크한 뒤 int값으로 client에게 전송해준다. 그럼 client는 읽은 int값에 따라 에러처리를 한 후, 그 다음 server에서 보내는 파일의 데이터를 받아 파일을 생성하게 구현했다.
