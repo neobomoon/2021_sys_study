@@ -5,12 +5,9 @@
 #include <arpa/inet.h>
 #include <string.h> 
 #include <limits.h>
+#include<sys/stat.h>
 
-typedef struct header{
-    int type;
-    int file_len;
-    char file_name[PATH_MAX];
-}Header;
+
 
 ///////setoption
 void
@@ -62,71 +59,39 @@ send_data (int sock_fd, char *message, int len) {
     return ;
 }
 
+///////////recv
 void
-send_file (int sock_fd, FILE *fd) {
-	char buff[1024] ;
-	int len ;
-
-	while (!feof(fd)) {
-		len = fread(buff, 1, sizeof(buff), fd) ;
-		send_data(sock_fd, buff, len) ;
+recv_s (int sock_fd, char *type, int len) {
+	int s ;
+	while (len > 0 && (s = recv(sock_fd, type, len, 0)) > 0) {
+		type += s ;
+		len -= s ;
 	}
-
 }
 
+//////////list
 void
-send_file_data(int sock_fd, char *file_name){
-    //파일 열고
-    FILE *fd = fopen(file_name, "r") ;
-    if(fd == NULL)
-        goto exit_fopen ;
+list (int sock_fd){
 
-    //읽은 만큼 보내주기
-    char buff[512] ;
-    char *data = NULL ;
-    size_t size, len ; 
-    int s ;
-    while(feof(fd) == 0){
-        size = fread(buff, 1, sizeof(buff), fd) ;
-        len = strlen(buff) ;
-        data = buff ;
-        while(len > 0 && (s = send(sock_fd, buff, len, 0)) > 0){
-            data += s ;
-            len -= s;
-        }
-    }
-
-    fclose(fd) ;
-    return ;
-
-exit_fopen:
-    perror("fail to fopen") ;
-    exit(1) ;
-}
-
-////////recv_info
-void
-recv_list (int sock_fd) {// 여러가지 틀릴 가능성이 너무 많다.
-    char buff[1024] ;
+    shutdown(sock_fd, SHUT_WR) ;
+    
     char *data = 0x0 ;
-    int s ;
-    int len ;
-    //버퍼사이즈보다 클 경우 대비하기
-    while ((s = recv(sock_fd, buff, 1023, 0)) > 0) {
-
-        buff[s] = 0x0 ;
-        if (data == 0x0) {
-            data = strdup(buff) ;
-            len = s ;
-        }
-        else {
-            data = realloc(data, len + s + 1) ;
-            strncpy(data + len, buff, s) ;
-            len += s ;
-            data[len] = 0x0 ;
-        }
-
-    } // while end
+    char buff[1024] ;
+	int s ;
+	int len ;
+	while ((s = recv(sock_fd, buff, 1023, 0)) > 0) {
+		buff[s] = 0x0 ;
+		if (data == 0x0) {
+			data = strdup(buff) ;
+			len = s ;
+		}
+		else {
+			data = realloc(data, len + s + 1) ;
+			strncpy(data + len, buff, s) ;
+			len += s ;
+			(data) [len] = 0x0 ;
+		}
+	}
 
     printf("%s\n", data) ;
 
@@ -135,25 +100,30 @@ recv_list (int sock_fd) {// 여러가지 틀릴 가능성이 너무 많다.
     return ;
 }
 
+//////get
 void
 checking (int sock_fd, char *check) {
     int len = 4 ;
     int s ;
-    while (len > 0 && (s = recv(sock_fd, check, sizeof(int), 0))) { // 보낼 바이트 수 ' - len' 해주기!
+    while (len > 0 && (s = recv(sock_fd, check, len - s, 0)) > 0) { // 보낼 바이트 수 ' - len' 해주기!
         check += s ;
         len -= s;
     }
 }
+
 void
-recv_get (int sock_fd, char *file) {
+get (int sock_fd, char *file) {
+
+    send_data(sock_fd, file, strlen(file)) ; // send 'file name'
+
+    shutdown(sock_fd, SHUT_WR) ;
 
     // 파일 여부 확인하기
     int check = 0;
-    checking(sock_fd, (char *) &check) ;
-    // recv(sock_fd, &check, sizeof(int), 0) ;
-
+    recv_s(sock_fd, (char *) &check, 4) ;
+    
     if (check) {
-        perror("server has not file") ;
+        perror("server has not file or not regular file") ;
         exit(1) ;
     }
 
@@ -177,13 +147,63 @@ recv_get (int sock_fd, char *file) {
     fclose(fd) ;
 
     return ;
+
+}
+
+///////put
+int
+isreg (char *file_path) {
+	struct stat st ;
+	if (stat(file_path, &st) == -1) {
+		perror("fail to stat") ;
+		exit(1) ;
+	}
+
+	if (S_ISREG(st.st_mode)) 
+		return 0 ;
+	else
+		return 1 ;
+}
+
+void
+put (int sock_fd, char *file) {
+    int len = strlen(file) ;
+
+    //파일 길이 보내기
+    send_data(sock_fd, (char *) &len, sizeof(len)) ;
+
+    //파일이름 보내기
+    send_data (sock_fd, file, len) ;
+
+    // 파일 열기
+	FILE *fd = fopen(file, "rb") ;
+	int check = 0;
+	if (fd == NULL || isreg(file)) 
+		goto no_file ;
+
+	// 파일의 내용 보내기
+	char buff[1024] ;
+	len = 0 ;
+
+	while (!feof(fd)) {
+		len = fread(buff, 1, sizeof(buff), fd) ;
+		send_data(sock_fd, buff, len) ;
+	}
+
+
+    shutdown(sock_fd, SHUT_WR) ;
+
+    return ;
+
+no_file:
+    perror("fail to fopen or not regular file") ;
+    exit(1) ;
 }
 
 
 int 
 main(int argc, char **argv) 
 {   
-    Header header ;
     char file[PATH_MAX] = {0};
     int type ;
     int port ;
@@ -215,22 +235,14 @@ main(int argc, char **argv)
     // type 보내기
     send_data(sock_fd, (char *) &type, sizeof(type)) ;
 
-    if (type == 1) {
-        shutdown(sock_fd, SHUT_WR) ;
-        recv_list(sock_fd) ; // recive 'list'
-    }
+    if (type == 1)
+        list(sock_fd) ;
 
-    if(type == 2) {
-        send_data(sock_fd, file, sizeof(file)) ; // send 'file name'
-        shutdown(sock_fd, SHUT_WR) ;
-        recv_get(sock_fd, file) ; // recive 'file data' & 'create'
-    }
-
-    if(type == 3) {
-        // send_data(sock_fd, file, sizeof(file)) ; // send 'file name'
-        // send_file_data(sock_fd, file) ; // send 'file data'
-        // shutdown(sock_fd, SHUT_WR) ;
-        // recv_put() ; // 성공여부
+    if (type == 2) 
+        get(sock_fd, file) ;
+    
+    if (type == 3) {
+        put(sock_fd, file) ;
     }
 
 
