@@ -8,12 +8,13 @@
 #include <unistd.h>
 #include <limits.h>
 #include <dirent.h>
+#include<sys/stat.h>
+
 
 
 int port ;
 char dir[PATH_MAX] ;
 
-////////set_option
 void
 set_option (int argc, char **argv, int *port, char *dir) {
 	int opt ;
@@ -30,12 +31,20 @@ set_option (int argc, char **argv, int *port, char *dir) {
 	return ;
 }
 
-////////send_list
+void
+recv_s (int sock_fd, char *type, int len) {
+	int s ;
+	while (len > 0 && (s = recv(sock_fd, type, len, 0)) > 0) {
+		type += s ;
+		len -= s ;
+	}
+}
+
 void
 send_data (int sock_fd, char *message, int len) {
     int s ;
     while (len > 0 && (s = send(sock_fd, message, len, 0)) > 0) {
-        printf("send size: %d\n", s) ; //hello\n
+        printf("send size: %d\n", s) ;
 		message += s ;
         len -= s ;
     }
@@ -43,8 +52,9 @@ send_data (int sock_fd, char *message, int len) {
 }
 
 
+////////list
 void
-send_list (int sock_fd) {
+list (int sock_fd) {
 
 	DIR *dp = opendir(dir) ;
 	if(dp == NULL)
@@ -84,37 +94,40 @@ exit_opendir:
 	exit(1) ;
 }
 
-// void // 퍄일 이름 받고 -> 확인하고 -> 결과 보내고 -> 열고 -> 보내기
+
+///////get
 void
-recv_data (int sock_fd, char **file) {
+recv_data (int sock_fd, char **data) {
 	char buff[1024] ;
 	int s ;
 	int len ;
 	while ((s = recv(sock_fd, buff, 1023, 0)) > 0) {
 		buff[s] = 0x0 ;
-		if (*file == 0x0) {
-			*file = strdup(buff) ;
+		if (*data == 0x0) {
+			*data = strdup(buff) ;
 			len = s ;
 		}
 		else {
-			*file = realloc(*file, len + s + 1) ;
-			strncpy(*file + len, buff, s) ;
+			*data = realloc(*data, len + s + 1) ;
+			strncpy(*data + len, buff, s) ;
 			len += s ;
-			(*file) [len] = 0x0 ;
+			(*data) [len] = 0x0 ;
 		}
 	}
 }
 
-void
-send_file (int sock_fd, FILE *fd) {
-	char buff[1024] ;
-	int len ;
-
-	while (!feof(fd)) {
-		len = fread(buff, 1, sizeof(buff), fd) ;
-		send_data(sock_fd, buff, len) ;
+int
+isreg (char *file_path) {
+	struct stat st ;
+	if (stat(file_path, &st) == -1) {
+		perror("fail to stat") ;
+		exit(1) ;
 	}
 
+	if (S_ISREG(st.st_mode)) 
+		return 0 ;
+	else
+		return 1 ;
 }
 
 void
@@ -133,15 +146,21 @@ get (int sock_fd) {
 	// 파일 열기
 	FILE *fd = fopen(file_path, "rb") ;
 	int check = 0;
-
-	if (fd == NULL) 
+	if (fd == NULL || isreg(file_path)) 
 		goto no_file ;
 	else
 		send_data(sock_fd, (char *) &check, sizeof(int)) ;
 
 
 	// 파일의 내용 보내기
-	send_file(sock_fd, fd) ;
+	char buff[1024] ;
+	int len ;
+
+	while (!feof(fd)) {
+		len = fread(buff, 1, sizeof(buff), fd) ;
+		send_data(sock_fd, buff, len) ;
+	}
+
 	shutdown(sock_fd, SHUT_WR) ;
 
 
@@ -150,17 +169,53 @@ get (int sock_fd) {
 	return ;
 
 no_file: 
-	printf("there is no %s\n", file_path) ;
+	printf("there is no or not regular file\n") ;
 	check = 1 ;
 	send_data(sock_fd, (char *) &check, sizeof(int)) ;
 	shutdown(sock_fd, SHUT_WR) ;
 	return ;
 }
 
-// void // 파일 이름 받고 -> 데이터 받고 -> 파일 만들기
-// put () { 
 
-// }
+//////put
+void // 파일 이름 받고 -> 데이터 받고 -> 파일 만들기
+put (int sock_fd) { 
+	// 파일 길이 받고
+	int file_len ;
+	recv_s(sock_fd, (char *) &file_len, sizeof(file_len)) ;
+	
+	// 파일 이름 받기
+	char *file = (char *) malloc(sizeof(char) * file_len) ;
+	recv_s(sock_fd, file, file_len) ;
+
+	// path 만들기
+	char file_path[PATH_MAX] ;
+	sprintf(file_path, "%s/%s", dir, file) ; // path_cat 으로 바꾸기 
+
+	printf("file len : %d, file name : %s, file path : %s\n", file_len, file, file_path) ;
+
+	// 파일 생성하기
+    FILE *fd = fopen(file_path, "wb") ;
+    if (fd == NULL) {
+        perror("fail to fopen") ;
+        exit(1) ;
+    }
+    
+    
+    // client가 보내는 file내용 받기
+    char buff[1024] ;
+    int s ;
+    while ((s = recv(sock_fd, buff, 1024, 0)) > 0) {
+        fwrite(buff, s , 1, fd) ;
+    }
+    printf("%s\n", buff) ;
+    
+
+    fclose(fd) ;
+	free(file) ;
+
+	return ;
+}
 
 
 ////////child_proc
@@ -169,17 +224,18 @@ child_proc(void *arg)
 {
 	int sock_fd = * (int *) arg ;
 
-	int type  = 0 ;
-	recv(sock_fd, &type, 4, 0) ; // while문 써서 더블체크로 바꾸기!!
+	int type ;
+	recv_s(sock_fd, (char *) &type, 4) ;
+
 	printf("type = %d\n", type) ;
 	if (type == 1)
-		send_list(sock_fd) ;
+		list(sock_fd) ;
 
 	if (type == 2)
 		get(sock_fd) ;
 	
 	if (type == 3)
-		// down_file() ;
+		put(sock_fd) ;
 
 	close(sock_fd) ;
 	return NULL ;
