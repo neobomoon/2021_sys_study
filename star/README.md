@@ -7,4 +7,4 @@
   
 ./star extract {archive-file-name}
 
-for test
+this is test
